@@ -1,0 +1,362 @@
+version = "1.0"
+
+-- hardware handler
+local hardware = {
+	modemSide = nil,
+	monitor = nil,
+	detectModem = function(self)
+    local typeName = "modem"
+    if peripheral.getType("top") == typeName then
+      self.modemSide = "top"
+    elseif peripheral.getType("right") == typeName then
+      self.modemSide = "right"
+    elseif peripheral.getType("bottom") == typeName then
+      self.modemSide = "bottom"
+    elseif peripheral.getType("left") == typeName then
+      self.modemSide = "left"
+    elseif peripheral.getType("front") == typeName then
+      self.modemSide = "front"
+    elseif peripheral.getType("back") == typeName then
+      self.modemSide = "back"
+    end
+	end,
+	detectMonitor = function()
+		self.monitor = peripheral.find("monitor")
+	end
+}
+
+-- color palettes
+local palettes = {
+	color = {
+		good = colors.lime,
+		bad = colors.red,
+    label = colors.lightGray,
+    bg = colors.black,
+    text = colors.white,
+    titleBg = colors.orange,
+    titleText = colors.black,
+	},
+	bw = {
+		good = colors.white,
+		bad = colors.white,
+    label = colors.white,
+    bg = colors.black,
+    text = colors.white,
+    titleBg = colors.white,
+    titleText = colors.black,
+	}
+}
+
+-- configuration handler
+local config = {
+  dir = "/data",
+	name = "config",
+  settings = {},
+  path = function(self)
+    return self.dir.."/"..self.name
+  end
+	save = function(self)
+		-- make directory if needed
+		if not fs.exists(self.dir) then
+			fs.makeDir(self.dir)
+		end
+		-- write file
+		local fh = fs.open(self.path(), "w") or error("Error writing config file.", 2)
+		fh.write(textutils.serialize(self.settings))
+		fh.close()
+	end,
+	load = function(self)
+		-- read file
+		local fh = fs.open(self.path(), "r") or error("Error opening config file.")
+		local data = fh.readAll()
+		self.settings = textutils.unserialize(data)
+		fh.close()
+	end,
+  exists = function(self)
+    return fs.exists(self.path())
+  end
+}
+
+-- protocol definition
+local protocol = {
+	name = "baseworks",	
+	codes = {
+		query = "QUERY",
+		on = "ACTIVATE",
+		off = "DEACTIVATE",
+    reset = "RESET",
+    success = "SUCCESS",
+    failure = "FAILURE",
+    invalid = "INVALID"
+	},
+  listen = function(self)
+    -- open modem
+    rednet.open(config.settings.modemSide)
+      
+    -- wait for message
+    local id, message = rednet.receive(self.name)
+    
+    -- turn off modem
+    rednet.close(config.settings.modemSide)
+    
+    -- decode
+    message = textutils.unserialize(message)
+    
+    return id, message.code, message.data
+  end,
+  send = function(self, to, code, data)
+    -- open modem
+    rednet.open(config.settings.modemSide)
+    
+    -- encode message
+    local message = textutils.serialize({ code = code, data = data })
+    
+    -- send
+    rednet.send(to, message, self.name)
+    
+    -- turn off modem
+    rednet.close(config.settings.modemSide)
+  end,
+  query = function(self)
+    -- open modem
+    rednet.open(config.settings.modemSide)
+    
+    -- broadcast query code
+    rednet.broadcast(textutils.serialize({ code = self.codes.query, data = {} }), self.name)
+  end
+}
+
+-- logger definition
+local logger = {
+  lastRequest = {
+    at = "",
+    from = "",
+    to = "",
+    request = "",
+    reply = ""
+  }
+}
+
+-- drawing instructions for the various screens
+local draw = {
+  choosePalette = function(self, display)
+    -- TODO: auto-determine palette to use
+    return palettes.color
+  end,
+  writeValue = function(self, display, x, y, label, value, valueColor)
+    local palette = self:choosePalette(display)
+    
+    display.setCursorPos(x,y)
+    
+    display.setTextColor(palette.label)
+    display.write(label..": ")
+    
+    if valueColor == nil then
+      valueColor = palette.text
+    end
+    
+    display.setTextColor(valueColor)
+    display.write(value)    
+  end,
+  controllerInfo = function(self, display, controller)
+    local palette = self:choosePalette(display)
+    
+    -- determine display size
+    local width, height = display.getSize()
+  
+    -- draw title bar
+    local title = "Baseworks Controller v"..version
+    
+    display.clear()
+    display.setCursorPos(1,1)
+    display.setBackgroundColor(palette.titleBg)
+    display.setTextColor(palette.titleText)
+    display.write(string.rep(" ",math.floor(width/2)-(#title/2)) .. title .. string.rep(" ",math.ceil(width/2)+(#title/2)))
+    
+    display.setBackgroundColor(palette.bg)
+    
+    -- draw id
+    self:writeValue(display, 1, 3, "ID", os.getComputerID())    
+    
+    -- draw name
+    self:writeValue(display, 1, 4, "Name", config.settings.name)
+        
+    -- draw note
+    self:writeValue(display, 1, 5, "Note", config.settings.note)   
+    
+    -- draw state
+    color = palette.text
+    stateName = ""
+    if controller.isOn then
+      color = palette.good
+      stateName = config.settings.onStateName
+    else
+      color = palette.bad
+      stateName = config.settings.offStateName
+    end      
+    
+    self:writeValue(display, 1, 7, "State", stateName, color)
+
+    -- draw log
+    display.setTextColor(palette.label)
+    
+    display.setCursorPos(1,9)      
+    display.write("Last Request")
+    
+    display.setCursorPos(1,10)
+    display.write("------------")    
+    
+    self:writeValue(display, 1, 11, "At", logger.lastRequest.at)
+    self:writeValue(display, 1, 12, "From ID", logger.lastRequest.from)
+    self:writeValue(display, 1, 13, "Request", logger.lastRequest.request)  
+    self:writeValue(display, 1, 14, "Reply", logger.lastRequest.reply)
+    
+    display.setCursorPos(1,16)
+  end
+}
+
+-- controller definition which controls the state of the connected device
+local controller = {
+  isOn = false,
+  loadDefaultSettings = function(self)
+		config.settings = {
+			name = "Device Name",
+			note = "A short description.",
+			onStateName = "ON",
+			offStateName = "OFF",
+      isOnAtStartup = "false",
+      rsTurnsOn = "true",
+      rsSide = "back",
+      modemSide = "none",
+      monitorSide = "none"
+		}
+	end,
+  setDeviceState = function(self, setToOn)
+    if setToOn then
+      -- turn on
+      if config.settings.rsTurnsOn then
+        rs.setOutput(config.settings.rsSide, true)        
+      else
+        rs.setOutput(config.settings.rsSide, false)
+      end
+    else
+      -- turn off
+      if config.settings.rsTurnsOn then
+        rs.setOutput(config.settings.rsSide, false)
+      else
+        rs.setOutput(config.settings.rsSide, true)
+      end
+    end
+    -- save state
+    self.isOn = setToOn
+  end,
+	handleProtocolCode = function(self, code)
+    -- default to invalid code
+    local reply = protocol.codes.invalid
+    local data = {}
+    
+		if code == protocol.codes.query then
+      -- reply with info about self
+      local stateName = config.settings.offStateName
+      if self.isOn then
+        stateName = config.settings.onStateName
+      end
+      
+      data = {
+        name = config.settings.name,
+        note = config.settings.note,
+        state = stateName
+      }      
+      reply = protocol.codes.success
+    elseif code == protocol.codes.on then   
+      -- turn device on
+      self:setDeviceState(true)
+      reply = protocol.codes.success
+    elseif code == protocol.codes.off then
+      -- turn device off
+      self:setDeviceState(false)
+      reply = protocol.codes.success
+    elseif code == protocol.codes.reset then
+      -- turn device to startup state
+      self:setDeviceState(config.settings.isOnAtStartup)
+      reply = protocol.codes.success
+    end        
+    
+    return reply, data
+	end,
+	start = function(self)
+		-- load settings
+    if !config:exists() then
+      self:loadDefaultSettings()
+      config:save()
+    end
+    
+    config:load()
+    
+		-- set default device state	
+    self:setDeviceState(config.settings.isOnAtStartup)     
+            
+		-- main loop
+    while true do
+      -- draw screen
+      draw:controllerInfo(term, self)
+    
+      -- start listening for requests
+      local data = {}
+      
+      logger.lastRequest.from, logger.lastRequest.request = protocol:listen()           
+      logger.lastRequest.at = textutils.formatTime(os.time()).." on day "..os.day()
+      logger.lastRequest.reply, data = self:handleProtocolCode(logger.lastRequest.request)
+            
+      -- send reply
+      protocol:send(logger.lastRequest.from, logger.lastRequest.reply, data)
+    end
+	end,
+	stop = function(self)
+		config:save()
+	end
+}
+
+local client = {
+  loadDefaultSettings = function(self)
+		config.settings = {
+			name = "Terminal",
+			note = "A terminal.",
+      modemSide = "none",
+      monitorSide = "none"
+		}
+  end,
+  start = function()
+    -- load settings
+    if !config:exists() then
+      self:loadDefaultSettings()
+      config:save()
+    end
+    
+    -- main loop
+    --while true do
+      -- find controllers      
+      protocol:query()
+    
+      id, code, data = protocol:listen()
+      
+      -- draw screen
+      print (id)
+      print (code)
+      print (data.name)
+      print (data.note)
+      print (data.state)
+      
+      -- start listening for mouse events
+    --end
+  end
+}
+
+-- testing
+--client.loadDefaultSettings()
+--config:save()
+
+client:start()
+--config:load()
+--draw:controllerInfo(term, controller)
+--print(config.settings.name)
