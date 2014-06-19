@@ -37,6 +37,7 @@ local palettes = {
     text = colors.white,
     titleBg = colors.orange,
     titleText = colors.black,
+    helpText = colors.orange,
 	},
 	bw = {
 		good = colors.white,
@@ -46,6 +47,7 @@ local palettes = {
     text = colors.white,
     titleBg = colors.white,
     titleText = colors.black,
+    helpText = colors.white,
 	}
 }
 
@@ -91,27 +93,21 @@ local protocol = {
     failure = "FAILURE",
     invalid = "INVALID"
 	},
-  listen = function(self)
-    -- open modem
-    rednet.open(config.settings.modemSide)
-      
-    -- wait for message
-    local id, message = rednet.receive(self.name)
-    
-    -- turn off modem
-    rednet.close(config.settings.modemSide)
-    
+  decode = function(self, message)           
     -- decode
     message = textutils.unserialize(message)
     
-    return id, message.code, message.data
+    return message.code, message.data
+  end,
+  encode = function(self, code, data)
+    return textutils.serialize({ code = code, data = data })
   end,
   send = function(self, to, code, data)
     -- open modem
     rednet.open(config.settings.modemSide)
     
     -- encode message
-    local message = textutils.serialize({ code = code, data = data })
+    local message = self:encode(code, data)
     
     -- send
     rednet.send(to, message, self.name)
@@ -145,6 +141,21 @@ local draw = {
     -- TODO: auto-determine palette to use
     return palettes.color
   end,
+  titleBar = function(self, display, title)
+    local palette = self:choosePalette(display)
+    
+    -- determine display size
+    local width, height = display.getSize()
+    
+    title = title.." v"..version
+        
+    display.setCursorPos(1,1)
+    display.setBackgroundColor(palette.titleBg)
+    display.setTextColor(palette.titleText)
+    display.write(string.rep(" ",math.floor(width/2)-(#title/2)) .. title .. string.rep(" ",math.ceil(width/2)+(#title/2)))
+    
+    display.setBackgroundColor(palette.bg)
+  end,
   writeValue = function(self, display, x, y, label, value, valueColor)
     local palette = self:choosePalette(display)
     
@@ -165,17 +176,11 @@ local draw = {
     
     -- determine display size
     local width, height = display.getSize()
+        
+    display.clear()
   
     -- draw title bar
-    local title = "Baseworks Controller v"..version
-    
-    display.clear()
-    display.setCursorPos(1,1)
-    display.setBackgroundColor(palette.titleBg)
-    display.setTextColor(palette.titleText)
-    display.write(string.rep(" ",math.floor(width/2)-(#title/2)) .. title .. string.rep(" ",math.ceil(width/2)+(#title/2)))
-    
-    display.setBackgroundColor(palette.bg)
+    self:titleBar(display, "Baseworks Controller")
     
     -- draw id
     self:writeValue(display, 1, 3, "ID", os.getComputerID())    
@@ -209,17 +214,41 @@ local draw = {
     display.write("------------")    
     
     self:writeValue(display, 1, 11, "At", logger.lastRequest.at)
-    self:writeValue(display, 1, 12, "From ID", logger.lastRequest.from)
+    self:writeValue(display, 1, 12, "By", logger.lastRequest.from)
     self:writeValue(display, 1, 13, "Request", logger.lastRequest.request)  
     self:writeValue(display, 1, 14, "Reply", logger.lastRequest.reply)
     
-    display.setCursorPos(1,16)
+    -- draw help menu    
+    display.setCursorPos(1,height)
+    display.write("[")
+    display.setTextColor(palette.helpText)
+    display.write("c")
+    display.setTextColor(palette.text)
+    display.write("]hange state  [")
+    display.setTextColor(palette.helpText)
+    display.write("q")
+    display.setTextColor(palette.text)
+    display.write("]uit")
+  end,
+  shutdown = function(self, display)
+    local palette = self:choosePalette(display)
+    
+    display.clear()
+    
+    display.setCursorPos(1,1)    
+    display.setTextColor(palette.text)
+    display.setBackgroundColor(palette.bg)
+    
+    display.write("Goodbye")
+    
+    display.setCursorPos(1,3)
   end
 }
 
 -- controller definition which controls the state of the connected device
 local controller = {
   isOn = false,
+  stopRequested = false,
   loadDefaultSettings = function(self)
 		config.settings = {
 			name = "Device Name",
@@ -286,6 +315,39 @@ local controller = {
     
     return reply, data
 	end,
+  handleRemoteRequest = function(self, from, message)
+    local data = {}
+    
+    logger.lastRequest.from = from
+    logger.lastRequest.request = protocol:decode(message)
+    logger.lastRequest.at = textutils.formatTime(os.time()).." on day "..os.day()
+    logger.lastRequest.reply, data = self:handleProtocolCode(logger.lastRequest.request)
+          
+    -- send reply
+    protocol:send(logger.lastRequest.from, logger.lastRequest.reply, data)
+  end,
+  handleLocalRequest = function(self, key)       
+    -- handle keys
+    if key == "c" then
+      -- log request
+      logger.lastRequest.from = "Console"
+      logger.lastRequest.at = textutils.formatTime(os.time()).." on day "..os.day()
+    
+      -- change state                
+      local changeTo = false
+      if self.isOn == false or self.isOn == "false" then
+        changeTo = true
+        logger.lastRequest.request = protocol.codes.on
+      else
+        logger.lastRequest.request = protocol.codes.off
+      end
+      
+      logger.lastRequest.reply = self:handleProtocolCode(logger.lastRequest.request)
+    elseif key == "q" then
+      -- request the app to quit gracefully
+      self.stopRequested = true
+    end
+  end,
 	start = function(self)
 		-- load settings
     if config:exists() ~= true then
@@ -297,25 +359,41 @@ local controller = {
     
 		-- set default device state	
     self:setDeviceState(config.settings.isOnAtStartup)
-    
+            
 		-- main loop
-    while true do
+    while self.stopRequested ~= true do
       -- draw screen
       draw:controllerInfo(term, self)
     
-      -- start listening for requests
-      local data = {}
+      -- open modem
+      rednet.open(config.settings.modemSide)
+    
+      -- start listening
+      local event, object1, object2, object3 = os.pullEvent()
       
-      logger.lastRequest.from, logger.lastRequest.request = protocol:listen()           
-      logger.lastRequest.at = textutils.formatTime(os.time()).." on day "..os.day()
-      logger.lastRequest.reply, data = self:handleProtocolCode(logger.lastRequest.request)
-            
-      -- send reply
-      protocol:send(logger.lastRequest.from, logger.lastRequest.reply, data)
+      if event == "rednet_message" then
+        -- handle remote request
+        self:handleRemoteRequest(object1, object2)
+      elseif event == "char" then
+        -- handle local request
+        self:handleLocalRequest(object1)
+      end
     end
+    
+    -- stop gracefully
+    self:stop()
 	end,
 	stop = function(self)
 		config:save()
+    
+    -- close modem
+    rednet.close(config.settings.modemSide)
+    
+    -- turn off device
+    self:setDeviceState(false)
+    
+    -- display shutdown screen
+    draw:shutdown(term)
 	end
 }
 
@@ -344,23 +422,36 @@ local client = {
       protocol:query()
     
     while true do
-      id, code, data = protocol:listen()
+      -- open modem
+      rednet.open(config.settings.modemSide)
+    
+      -- start listening
+      local event, object1, object2, object3 = os.pullEvent()
       
-      if code == protocol.codes.success then
-        self.controllers[id] = data
+      if event == "rednet_message" then
+        -- handle remote request
+        --self:handleRemoteRequest(object1, object2)
         
-        print (id)
+        local id = object1
+        local code, data = protocol:decode(object2)
+                
+        self.controllers[id] = data        
+        
+        print(id)
         print (code)
         print (data.name)
         print (data.note)
         print (data.state)
         print ("")
+      elseif event == "key" then
+        -- handle local request
+        --self:handleLocalRequest(object1)
       end
+      
+      
       
       -- draw screen
       
-      
-      -- start listening for mouse events
     end
   end
 }
