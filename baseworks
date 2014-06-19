@@ -328,7 +328,7 @@ local client = {
       monitorSide = "none"
 		}
   end,
-  start = function()
+  start = function(self)
     -- load settings
     if config:exists() ~= true then
       self:loadDefaultSettings()
@@ -358,7 +358,7 @@ local client = {
 
 -- handle arguments
 if #tArgs == 0 then
-  print("Usage: baseworks <controller|client>")
+  print("Usage: baseworks <controller | client>")
 else
   if tArgs[1] == "controller" then
     controller:start()
