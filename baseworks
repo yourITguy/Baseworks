@@ -189,7 +189,7 @@ local draw = {
     -- draw state
     color = palette.text
     stateName = ""
-    if controller.isOn then
+    if controller.isOn == true then
       color = palette.good
       stateName = config.settings.onStateName
     else
@@ -233,17 +233,17 @@ local controller = {
       monitorSide = "none"
 		}
 	end,
-  setDeviceState = function(self, setToOn)
-    if setToOn then
+  setDeviceState = function(self, setToOn)  
+    if setToOn == true then
       -- turn on
-      if config.settings.rsTurnsOn then
+      if config.settings.rsTurnsOn == "true" then
         rs.setOutput(config.settings.rsSide, true)        
       else
         rs.setOutput(config.settings.rsSide, false)
       end
     else
       -- turn off
-      if config.settings.rsTurnsOn then
+      if config.settings.rsTurnsOn == "true" then
         rs.setOutput(config.settings.rsSide, false)
       else
         rs.setOutput(config.settings.rsSide, true)
@@ -296,8 +296,8 @@ local controller = {
     config:load()
     
 		-- set default device state	
-    self:setDeviceState(config.settings.isOnAtStartup)     
-            
+    self:setDeviceState(config.settings.isOnAtStartup)
+    
 		-- main loop
     while true do
       -- draw screen
@@ -320,6 +320,7 @@ local controller = {
 }
 
 local client = {
+  controllers = {},
   loadDefaultSettings = function(self)
 		config.settings = {
 			name = "Terminal",
@@ -342,17 +343,25 @@ local client = {
       -- find controllers      
       protocol:query()
     
+    while true do
       id, code, data = protocol:listen()
       
+      if code == protocol.codes.success then
+        self.controllers[id] = data
+        
+        print (id)
+        print (code)
+        print (data.name)
+        print (data.note)
+        print (data.state)
+        print ("")
+      end
+      
       -- draw screen
-      print (id)
-      print (code)
-      print (data.name)
-      print (data.note)
-      print (data.state)
+      
       
       -- start listening for mouse events
-    --end
+    end
   end
 }
 
