@@ -138,8 +138,11 @@ local logger = {
 -- drawing instructions for the various screens
 local draw = {
   choosePalette = function(self, display)
-    -- TODO: auto-determine palette to use
-    return palettes.color
+	if (display.isColor()) then
+		return palettes.color
+	else
+		return palettes.bw
+	end
   end,
   titleBar = function(self, display, title)
     local palette = self:choosePalette(display)
