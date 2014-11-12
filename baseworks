@@ -6,7 +6,8 @@ local tArgs = {...}
 local hardware = {
 	modemSide = nil,
 	monitor = nil,
-	detectModem = function(self)
+  initialize = function(self)
+    -- detect modem
     local typeName = "modem"
 		if peripheral.getType("top") == typeName then
 		  self.modemSide = "top"
@@ -21,10 +22,10 @@ local hardware = {
 		elseif peripheral.getType("back") == typeName then
 		  self.modemSide = "back"
 		end
-	end,
-	detectMonitor = function(self)
-		self.monitor = peripheral.find("monitor")
-	end
+    
+    -- detect monitor
+    self.monitor = peripheral.find("monitor")
+  end
 }
 
 -- color palettes
@@ -91,7 +92,8 @@ local protocol = {
     reset = "RESET",
     success = "SUCCESS",
     failure = "FAILURE",
-    invalid = "INVALID"
+    invalid = "INVALID",
+    status = "STATUS"
 	},
   decode = function(self, message)           
     -- decode
@@ -138,11 +140,11 @@ local logger = {
 -- drawing instructions for the various screens
 local draw = {
   choosePalette = function(self, display)
-	if (display.isColor()) then
-		return palettes.color
-	else
-		return palettes.bw
-	end
+    if (display.isColor()) then
+      return palettes.color
+    else
+      return palettes.bw
+    end
   end,
   titleBar = function(self, display, title)
     local palette = self:choosePalette(display)
@@ -158,6 +160,24 @@ local draw = {
     display.write(string.rep(" ",math.floor(width/2)-(#title/2)) .. title .. string.rep(" ",math.ceil(width/2)+(#title/2)))
     
     display.setBackgroundColor(palette.bg)
+  end,
+  helpBar = function(self, display, keys)
+    local palette = self:choosePalette(display)
+    
+    -- determine display size
+    local width, height = display.getSize()
+    
+    -- draw keys
+    display.setCursorPos(1,height)
+    for index,value in pairs(keys) do
+      display.write("[")
+      display.setTextColor(palette.helpText)
+      display.write(value.key)
+      display.setTextColor(palette.text)
+      display.write("]")
+      display.write(value.suffix)
+      display.write(" ")
+    end   
   end,
   writeValue = function(self, display, x, y, label, value, valueColor)
     local palette = self:choosePalette(display)
@@ -221,17 +241,9 @@ local draw = {
     self:writeValue(display, 1, 13, "Request", logger.lastRequest.request)  
     self:writeValue(display, 1, 14, "Reply", logger.lastRequest.reply)
     
-    -- draw help menu    
-    display.setCursorPos(1,height)
-    display.write("[")
-    display.setTextColor(palette.helpText)
-    display.write("c")
-    display.setTextColor(palette.text)
-    display.write("]hange state  [")
-    display.setTextColor(palette.helpText)
-    display.write("q")
-    display.setTextColor(palette.text)
-    display.write("]uit")
+    -- draw help menu
+    self:helpBar(display, controller.keys)
+
   end,
   shutdown = function(self, display)
     local palette = self:choosePalette(display)
@@ -248,13 +260,15 @@ local draw = {
   end
 }
 
+
 -- controller definition which controls the state of the connected device
 local controller = {
   isOn = false,
   stopRequested = false,
+  keys = { 
+    shutdown = { key = "s", suffix = "hutdown" } 
+  },
   loadDefaultSettings = function(self)
-		hardware:detectModem()
-	
 		config.settings = {
 			name = "Device Name",
 			note = "A short description.",
@@ -286,24 +300,25 @@ local controller = {
     -- save state
     self.isOn = setToOn
   end,
+  buildInfoTable = function(self)   
+    -- reply with info about self
+    local stateName = config.settings.offStateName
+    if self.isOn then
+      stateName = config.settings.onStateName
+    end
+    
+    return {
+      name = config.settings.name,
+      note = config.settings.note,
+      state = stateName
+    }
+  end,
 	handleProtocolCode = function(self, code)
     -- default to invalid code
-    local reply = protocol.codes.invalid
-    local data = {}
+    local reply = protocol.codes.invalid    
     
-		if code == protocol.codes.query then
-      -- reply with info about self
-      local stateName = config.settings.offStateName
-      if self.isOn then
-        stateName = config.settings.onStateName
-      end
-      
-      data = {
-        name = config.settings.name,
-        note = config.settings.note,
-        state = stateName
-      }      
-      reply = protocol.codes.success
+		if code == protocol.codes.query then      
+      reply = protocol.codes.status
     elseif code == protocol.codes.on then   
       -- turn device on
       self:setDeviceState(true)
@@ -318,9 +333,9 @@ local controller = {
       reply = protocol.codes.success
     end        
     
-    return reply, data
+    return reply, self:buildInfoTable()
 	end,
-  handleRemoteRequest = function(self, from, message)
+  handleRemoteEvent = function(self, from, message)
     local data = {}
     
     logger.lastRequest.from = from
@@ -331,29 +346,17 @@ local controller = {
     -- send reply
     protocol:send(logger.lastRequest.from, logger.lastRequest.reply, data)
   end,
-  handleLocalRequest = function(self, key)       
-    -- handle keys
-    if key == "c" then
-      -- log request
-      logger.lastRequest.from = "Console"
-      logger.lastRequest.at = textutils.formatTime(os.time()).." on day "..os.day()
-    
-      -- change state                
-      local changeTo = false
-      if self.isOn == false or self.isOn == "false" then
-        changeTo = true
-        logger.lastRequest.request = protocol.codes.on
-      else
-        logger.lastRequest.request = protocol.codes.off
-      end
-      
-      logger.lastRequest.reply = self:handleProtocolCode(logger.lastRequest.request)
-    elseif key == "q" then
+  handleLocalEvent = function(self, key)
+    -- handle keys    
+    if key == self.keys.shutdown.key then -- shutdown
       -- request the app to quit gracefully
       self.stopRequested = true
     end
   end,
 	start = function(self)
+    -- init hardware
+    hardware:initialize()
+  
 		-- load settings
     if config:exists() ~= true then
       self:loadDefaultSettings()
@@ -376,12 +379,11 @@ local controller = {
       -- start listening
       local event, object1, object2, object3 = os.pullEvent()
       
+      -- handle event
       if event == "rednet_message" then
-        -- handle remote request
-        self:handleRemoteRequest(object1, object2)
+        self:handleRemoteEvent(object1, object2)
       elseif event == "char" then
-        -- handle local request
-        self:handleLocalRequest(object1)
+        self:handleLocalEvent(object1)
       end
     end
     
@@ -405,8 +407,6 @@ local controller = {
 local client = {
   controllers = {},
   loadDefaultSettings = function(self)
-    hardware:detectModem()
-  
 		config.settings = {
 			name = "Terminal",
 			note = "A terminal.",
@@ -414,7 +414,26 @@ local client = {
       monitorSide = "none"
 		}
   end,
+  handleRemoteEvent = function(self, from, message)
+    self.controllers[from] = from
+        
+    local id = from
+    local code, data = protocol:decode(message)
+        
+    print(id)
+    print(code)
+    print(data.name)
+    print(data.note)
+    print(data.state)
+    print("")
+  end,
+  handleLocalEvent = function(self, key)
+    
+  end,  
   start = function(self)
+    -- init hardware
+    hardware:initialize()
+  
     -- load settings
     if config:exists() ~= true then
       self:loadDefaultSettings()
@@ -426,42 +445,28 @@ local client = {
     -- main loop
     --while true do
       -- find controllers      
-      protocol:query()
+    protocol:query()
     
-    while true do
+    while self.stopRequested ~= true do
+      -- draw screen
+    
       -- open modem
       rednet.open(config.settings.modemSide)
     
       -- start listening
       local event, object1, object2, object3 = os.pullEvent()
       
+      -- handle event
       if event == "rednet_message" then
-        -- handle remote request
-        --self:handleRemoteRequest(object1, object2)
-        
-        local id = object1
-        local code, data = protocol:decode(object2)
-                
-        self.controllers[id] = data        
-        
-        print(id)
-        print (code)
-        print (data.name)
-        print (data.note)
-        print (data.state)
-        print ("")
-      elseif event == "key" then
-        -- handle local request
-        --self:handleLocalRequest(object1)
+        self:handleRemoteEvent(object1, object2)
+      elseif event == "char" then
+        self:handleLocalEvent(object1)
       end
-      
-      
-      
-      -- draw screen
       
     end
   end
 }
+
 
 -- handle arguments
 if #tArgs == 0 then
