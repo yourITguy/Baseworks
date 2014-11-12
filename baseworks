@@ -8,21 +8,21 @@ local hardware = {
 	monitor = nil,
 	detectModem = function(self)
     local typeName = "modem"
-    if peripheral.getType("top") == typeName then
-      self.modemSide = "top"
-    elseif peripheral.getType("right") == typeName then
-      self.modemSide = "right"
-    elseif peripheral.getType("bottom") == typeName then
-      self.modemSide = "bottom"
-    elseif peripheral.getType("left") == typeName then
-      self.modemSide = "left"
-    elseif peripheral.getType("front") == typeName then
-      self.modemSide = "front"
-    elseif peripheral.getType("back") == typeName then
-      self.modemSide = "back"
-    end
+		if peripheral.getType("top") == typeName then
+		  self.modemSide = "top"
+		elseif peripheral.getType("right") == typeName then
+		  self.modemSide = "right"
+		elseif peripheral.getType("bottom") == typeName then
+		  self.modemSide = "bottom"
+		elseif peripheral.getType("left") == typeName then
+		  self.modemSide = "left"
+		elseif peripheral.getType("front") == typeName then
+		  self.modemSide = "front"
+		elseif peripheral.getType("back") == typeName then
+		  self.modemSide = "back"
+		end
 	end,
-	detectMonitor = function()
+	detectMonitor = function(self)
 		self.monitor = peripheral.find("monitor")
 	end
 }
@@ -253,16 +253,18 @@ local controller = {
   isOn = false,
   stopRequested = false,
   loadDefaultSettings = function(self)
+		hardware:detectModem()
+	
 		config.settings = {
 			name = "Device Name",
 			note = "A short description.",
 			onStateName = "ON",
 			offStateName = "OFF",
-      isOnAtStartup = "false",
-      rsTurnsOn = "true",
-      rsSide = "back",
-      modemSide = "none",
-      monitorSide = "none"
+			isOnAtStartup = "false",
+			rsTurnsOn = "true",
+			rsSide = "back",
+			modemSide = hardware.modemSide,
+			monitorSide = "monitor"
 		}
 	end,
   setDeviceState = function(self, setToOn)  
