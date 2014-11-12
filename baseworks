@@ -405,10 +405,12 @@ local controller = {
 local client = {
   controllers = {},
   loadDefaultSettings = function(self)
+    hardware:detectModem()
+  
 		config.settings = {
 			name = "Terminal",
 			note = "A terminal.",
-      modemSide = "none",
+      modemSide = hardware.modemSide,
       monitorSide = "none"
 		}
   end,
