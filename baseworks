@@ -253,7 +253,7 @@ local draw = {
     display.clear()
   
     -- draw title bar
-    self:titleBar(display, "Baseworks Module")
+    self:titleBar(display, "Baseworks")
     
     -- draw id
     self:writeValue(display, 1, 3, "ID", os.getComputerID())    
