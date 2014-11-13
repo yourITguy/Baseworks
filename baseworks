@@ -117,24 +117,74 @@ local protocol = {
     -- turn off modem
     rednet.close(config.settings.modemSide)
   end,
+  broadcast = function(self, code, data)
+    -- open modem
+    rednet.open(config.settings.modemSide)
+    
+    -- broadcast query code
+    rednet.broadcast(textutils.serialize({ code = code, data = data }), self.name)
+  end,
   query = function(self)
     -- open modem
     rednet.open(config.settings.modemSide)
     
     -- broadcast query code
-    rednet.broadcast(textutils.serialize({ code = self.codes.query, data = {} }), self.name)
+    self:broadcast(self.codes.query, {})
   end
 }
 
 -- logger definition
 local logger = {
-  lastRequest = {
-    at = "",
-    from = "",
-    to = "",
-    request = "",
-    reply = ""
-  }
+  dir = "/data",
+  name = "log",
+  path = function(self)
+    return self.dir.."/"..self.name
+  end,  
+  log = function(self, from, to, command, reply)
+    -- make directory if needed
+    if not fs.exists(self.dir) then
+			fs.makeDir(self.dir)
+		end
+    -- append file
+    local fh = fs.open(self:path(), "a") or error("Error writing log file.", 2)
+    
+    data = {
+      at = textutils.formatTime(os.time()).." on day "..os.day(),
+      from = from,
+      to = to,
+      command = command,
+      reply = reply
+    }
+    
+		fh.writeLine(textutils.serialize(data)..",")
+		fh.close()
+  end,
+  readLast = function(self)
+    local last = {
+      at = "",
+      from = "",
+      to = "",
+      command = "",
+      reply = ""
+    }
+  
+    if fs.exists(self:path()) then
+      -- read file    
+      local fh = fs.open(self:path(), "r") or error("Error reading log file.")
+      
+      -- get last
+      local allEntries = textutils.unserialize("{\n"..fh.readAll().."\n}")
+                  
+      -- deserialize
+      if #allEntries > 0 then
+        last = allEntries[#allEntries]
+      end
+      
+      fh.close()
+    end
+    
+    return last
+  end,
 }
 
 -- drawing instructions for the various screens
@@ -194,7 +244,7 @@ local draw = {
     display.setTextColor(valueColor)
     display.write(value)    
   end,
-  controllerInfo = function(self, display, controller)
+  moduleMainScreen = function(self, display, module)
     local palette = self:choosePalette(display)
     
     -- determine display size
@@ -203,7 +253,7 @@ local draw = {
     display.clear()
   
     -- draw title bar
-    self:titleBar(display, "Baseworks Controller")
+    self:titleBar(display, "Baseworks Module")
     
     -- draw id
     self:writeValue(display, 1, 3, "ID", os.getComputerID())    
@@ -217,7 +267,7 @@ local draw = {
     -- draw state
     color = palette.text
     stateName = ""
-    if controller.isOn == true then
+    if module.isOn == true then
       color = palette.good
       stateName = config.settings.onStateName
     else
@@ -231,18 +281,20 @@ local draw = {
     display.setTextColor(palette.label)
     
     display.setCursorPos(1,9)      
-    display.write("Last Request")
+    display.write("Last Command")
     
     display.setCursorPos(1,10)
     display.write("------------")    
     
-    self:writeValue(display, 1, 11, "At", logger.lastRequest.at)
-    self:writeValue(display, 1, 12, "By", logger.lastRequest.from)
-    self:writeValue(display, 1, 13, "Request", logger.lastRequest.request)  
-    self:writeValue(display, 1, 14, "Reply", logger.lastRequest.reply)
+    local lastCommand = logger:readLast()
+    
+    self:writeValue(display, 1, 11, "At", lastCommand.at)
+    self:writeValue(display, 1, 12, "By", lastCommand.from)
+    self:writeValue(display, 1, 13, "Command", lastCommand.command)  
+    self:writeValue(display, 1, 14, "Reply", lastCommand.reply)
     
     -- draw help menu
-    self:helpBar(display, controller.keys)
+    self:helpBar(display, module.keys)
 
   end,
   shutdown = function(self, display)
@@ -266,7 +318,7 @@ local module = {
   isOn = false,
   stopRequested = false,
   keys = { 
-    shutdown = { key = "s", suffix = "hutdown" } 
+    shutdown = { key = "s", suffix = "hutdown" }
   },
   loadDefaultSettings = function(self)
 		config.settings = {
@@ -336,15 +388,17 @@ local module = {
     return reply, self:buildInfoTable()
 	end,
   handleRemoteEvent = function(self, from, message)
+    local reply
     local data = {}
+    local code = protocol:decode(message)
     
-    logger.lastRequest.from = from
-    logger.lastRequest.request = protocol:decode(message)
-    logger.lastRequest.at = textutils.formatTime(os.time()).." on day "..os.day()
-    logger.lastRequest.reply, data = self:handleProtocolCode(logger.lastRequest.request)
-          
+    reply, data = self:handleProtocolCode(code)
+    
+    -- log command
+    logger:log(from, "", code, reply)
+            
     -- send reply
-    protocol:send(logger.lastRequest.from, logger.lastRequest.reply, data)
+    protocol:send(from, reply, data)
   end,
   handleLocalEvent = function(self, key)
     -- handle keys    
@@ -371,7 +425,7 @@ local module = {
 		-- main loop
     while self.stopRequested ~= true do
       -- draw screen
-      draw:controllerInfo(term, self)
+      draw:moduleMainScreen(term, self)
     
       -- open modem
       rednet.open(config.settings.modemSide)
@@ -405,6 +459,12 @@ local module = {
 }
 
 local controller = {
+  stopRequested = false,
+  keys = {
+    allon = { key = "a", suffix = "ctivate all" },
+    alloff = { key = "d", suffix = "eactivate all" },
+    shutdown = { key = "s", suffix = "hutdown" }
+  },
   modules = {},
   loadDefaultSettings = function(self)
 		config.settings = {
@@ -428,7 +488,17 @@ local controller = {
     print("")
   end,
   handleLocalEvent = function(self, key)
-    
+    -- handle keys    
+    if key == self.keys.shutdown.key then -- shutdown
+      -- request the app to quit gracefully
+      self.stopRequested = true
+    elseif key == self.keys.allon.key then -- activate all
+      -- broadcast activate command
+      protocol:broadcast(protocol.codes.on, {})
+    elseif key == self.keys.alloff.key then -- deactivate all
+      -- broadcast deactivate command
+      protocol:broadcast(protocol.codes.off, {})
+    end
   end,  
   start = function(self)
     -- init hardware
